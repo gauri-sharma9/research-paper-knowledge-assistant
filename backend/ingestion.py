@@ -1,14 +1,22 @@
-from pypdf import PdfReader
-from pathlib import Path
+import fitz  # PyMuPDF
 
-def load_pdf_text(pdf_path):
-    reader = PdfReader(pdf_path)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() or ""
-    return text
+def extract_text_from_pdf(path):
+    doc = fitz.open(path)
+    all_text = []
+
+    for page in doc:
+        text = page.get_text("text")
+        if text.strip():   # only keep real text
+            all_text.append(text)
+
+    return "\n".join(all_text)
+
 
 if __name__ == "__main__":
-    pdf = Path("data/papers/sample.pdf")
-    content = load_pdf_text(pdf)
-    print(content[:500])
+    pdf_path = "data/papers/sample.pdf"
+
+    text = extract_text_from_pdf(pdf_path)
+
+    print("Text length:", len(text))
+    print("\n---- SAMPLE ----\n")
+    print(text[:500])

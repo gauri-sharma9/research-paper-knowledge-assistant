@@ -9,3 +9,7 @@ pypdf
 opencv-python
 numpy
 python-dotenv
+sentence-transformers
+pymupdf
+pdfplumber
+torch
