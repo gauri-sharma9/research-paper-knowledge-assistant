@@ -5,4 +5,7 @@ app = FastAPI()
 @app.get("/")
 def root():
     return {"status": "backend running"}
-    return {"message": "Backend is running"}
+
+@app.post("/query")
+def query():
+    return {"message": "Query endpoint wired"}
