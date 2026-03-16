@@ -1,37 +1,46 @@
 import faiss
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import pipeline
 from sentence_transformers import SentenceTransformer
 
-llm_model_name = "google/flan-t5-base"
-
-tokenizer = AutoTokenizer.from_pretrained(llm_model_name)
-llm_model = AutoModelForSeq2SeqLM.from_pretrained(llm_model_name)
+qa_pipeline = pipeline(
+    "document-question-answering",
+    model="deepset/roberta-base-squad2"
+)
 
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")  # fast + high quality
 
 
 def store_embeddings(vectors, chunks):
     dimension = len(vectors[0])
-    index = faiss.IndexFlatL2(dimension)
+    index = faiss.IndexFlatIP(dimension)
 
     vectors_np = np.array(vectors).astype("float32")
+    faiss.normalize_L2(vectors_np)
     index.add(vectors_np)
 
     return index
 
 
 def chunk_text(text, chunk_size=800, overlap=100):
-    chunks = []
-    start = 0
 
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk)
-        start = end - overlap
+    sentences = text.split(". ")
+    chunks = []
+    current_chunk = ""
+
+    for sentence in sentences:
+
+        if len(current_chunk) + len(sentence) < chunk_size:
+            current_chunk += sentence + ". "
+        else:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence + ". "
+
+    if current_chunk:
+        chunks.append(current_chunk.strip())
 
     return chunks
+
 
 
 def embed_chunks(chunks):
@@ -40,11 +49,14 @@ def embed_chunks(chunks):
 
 
 def embed_query(question):
-    return embedding_model.encode([question])
+    vector = embedding_model.encode([question])
+    vector = np.array(vector).astype("float32")
+    faiss.normalize_L2(vector)
+    return vector
 
 
 # increased retrieval context
-def search_index(index, question_vector, k=5):
+def search_index(index, question_vector, k=3):
     distances, indices = index.search(question_vector, k)
     return indices
 
@@ -54,54 +66,50 @@ def retrieve_chunks(chunks, indices):
 
     for i in indices[0]:
         if i < len(chunks):
-            results.append(chunks[i])
+            chunk = chunks[i]
+
+            # filter unwanted sections
+            if "@" in chunk:
+                continue
+            if "reference" in chunk.lower():
+                continue
+            if "arxiv" in chunk.lower():
+                continue
+            if "[" in chunk and "]" in chunk:  # citations
+                continue
+
+            results.append(chunk)
 
     return results
-
+    print("\nRetrieved Chunks:\n")
+    for r in results:
+        print(r[:300])
+        print("----")
 
 def generate_answer(question, chunks):
 
-    # clean chunk text
     clean_chunks = []
+
     for c in chunks:
         c = c.replace("<pad>", "")
         c = c.replace("<EOS>", "")
         c = " ".join(c.split())
         clean_chunks.append(c)
 
-    context = " ".join(clean_chunks)
+    context = " ".join(clean_chunks[:3])  # top 3 chunks only
 
-    prompt = f"""
-You are an AI assistant that answers questions about research papers.
-
-Use ONLY the information from the context below.
-
-Context:
-{context}
-
-Question:
-{question}
-
-Give a clear and short answer.
-"""
-
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
-
-    outputs = llm_model.generate(
-        **inputs,
-        max_new_tokens=150,
-        temperature=0.2
+    result = qa_pipeline(
+        question=question,
+        context=context
     )
 
-    answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-    return answer
-
+    return result["answer"]
 
 if __name__ == "__main__":
-    from ingestion import extract_text_from_pdf
+    from ingestion import extract_text_from_pdf, clean_text
 
     text = extract_text_from_pdf("data/papers/sample.pdf")
+    text = clean_text(text)
 
     chunks = chunk_text(text)
 

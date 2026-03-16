@@ -1,4 +1,14 @@
 import fitz  # PyMuPDF
+import re
+
+def clean_text(text):
+    # remove email addresses
+    text = re.sub(r'\S+@\S+', '', text)
+
+    # remove excessive whitespace and line breaks
+    text = " ".join(text.split())
+
+    return text
 
 def extract_text_from_pdf(path):
     doc = fitz.open(path)
@@ -12,10 +22,12 @@ def extract_text_from_pdf(path):
     return "\n".join(all_text)
 
 
+
 if __name__ == "__main__":
     pdf_path = "data/papers/sample.pdf"
 
     text = extract_text_from_pdf(pdf_path)
+    text = clean_text(text)
 
     print("Text length:", len(text))
     print("\n---- SAMPLE ----\n")
