@@ -2,10 +2,18 @@ import fitz  # PyMuPDF
 import re
 
 def clean_text(text):
-    # remove email addresses
+    import re
+
+    # remove emails
     text = re.sub(r'\S+@\S+', '', text)
 
-    # remove excessive whitespace and line breaks
+    # ❗ remove copyright / permission text
+    text = re.sub(r'provided proper attribution.*?works\.', '', text, flags=re.IGNORECASE)
+
+    # ❗ remove references section completely
+    text = re.split(r'References', text, flags=re.IGNORECASE)[0]
+
+    # clean spaces
     text = " ".join(text.split())
 
     return text

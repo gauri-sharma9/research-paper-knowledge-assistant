@@ -1,12 +1,12 @@
 import faiss
 import numpy as np
-from transformers import pipeline
 from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-qa_pipeline = pipeline(
-    "document-question-answering",
-    model="deepset/roberta-base-squad2"
-)
+model_name = "google/flan-t5-base"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
 
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")  # fast + high quality
 
@@ -22,22 +22,36 @@ def store_embeddings(vectors, chunks):
     return index
 
 
-def chunk_text(text, chunk_size=800, overlap=100):
+def chunk_text(text):
 
-    sentences = text.split(". ")
+    # split by section titles
+    sections = text.split("\n")
+
     chunks = []
     current_chunk = ""
 
-    for sentence in sentences:
+    for line in sections:
 
-        if len(current_chunk) + len(sentence) < chunk_size:
-            current_chunk += sentence + ". "
+        line = line.strip()
+
+        if len(line) == 0:
+            continue
+
+        # detect section headers
+        if any(keyword in line.lower() for keyword in ["abstract", "introduction"]):
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = line + " "
         else:
-            chunks.append(current_chunk.strip())
-            current_chunk = sentence + ". "
+            current_chunk += line + " "
+
+        # keep chunk size reasonable
+        if len(current_chunk) > 800:
+            chunks.append(current_chunk)
+            current_chunk = ""
 
     if current_chunk:
-        chunks.append(current_chunk.strip())
+        chunks.append(current_chunk)
 
     return chunks
 
@@ -60,50 +74,72 @@ def search_index(index, question_vector, k=3):
     distances, indices = index.search(question_vector, k)
     return indices
 
-
 def retrieve_chunks(chunks, indices):
+
+    # ✅ FIRST: check if abstract exists anywhere
+    for chunk in chunks:
+        if "abstract" in chunk.lower():
+            print("\nUsing ABSTRACT directly\n")
+            return [chunk]
+
+    # fallback to FAISS
     results = []
 
     for i in indices[0]:
         if i < len(chunks):
-            chunk = chunks[i]
+            results.append(chunks[i])
 
-            # filter unwanted sections
-            if "@" in chunk:
-                continue
-            if "reference" in chunk.lower():
-                continue
-            if "arxiv" in chunk.lower():
-                continue
-            if "[" in chunk and "]" in chunk:  # citations
-                continue
-
-            results.append(chunk)
-
-    return results
     print("\nRetrieved Chunks:\n")
     for r in results:
-        print(r[:300])
+        print(r[:200])
         print("----")
+
+    return results
 
 def generate_answer(question, chunks):
 
+    # clean chunks
     clean_chunks = []
-
     for c in chunks:
         c = c.replace("<pad>", "")
         c = c.replace("<EOS>", "")
         c = " ".join(c.split())
         clean_chunks.append(c)
 
-    context = " ".join(clean_chunks[:3])  # top 3 chunks only
+    # 🔥 MOST IMPORTANT: only top 2 chunks
+    if len(clean_chunks) == 0:
+        return "No relevant context found."
 
-    result = qa_pipeline(
-        question=question,
-        context=context
-    )
+    context = clean_chunks[0]
 
-    return result["answer"]
+    prompt = f"""
+You are reading a research paper.
+
+Based on the context below, explain the main contribution of the paper in detail.
+
+Context:
+{context}
+
+Question: {question}
+
+Write a detailed answer in 3-4 sentences explaining what the paper proposes and why it is important.
+Do not give a short phrase.
+Write a clear explanation of the main contribution only.
+Do not include experimental results or numbers.
+"""
+
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
+
+    outputs = model.generate(
+    **inputs,
+    max_new_tokens=200,
+    do_sample=False,
+    min_length=80
+)
+
+    answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    return answer
 
 if __name__ == "__main__":
     from ingestion import extract_text_from_pdf, clean_text
