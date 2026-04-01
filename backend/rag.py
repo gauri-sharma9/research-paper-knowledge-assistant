@@ -7,7 +7,9 @@ Supports multi-document indexing and grounded answer generation.
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import os
+from groq import Groq
+from dotenv import load_dotenv
 import logging
  
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -20,10 +22,9 @@ MAX_FILE_SIZE_MB = 10           # Maximum size per PDF in megabytes
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
  
 # ── Model loading ──────────────────────────────────────────────────────────────
-MODEL_NAME = "google/flan-t5-base"
-logger.info("Loading LLM: %s", MODEL_NAME)
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
+load_dotenv()
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
  
 logger.info("Loading embedding model: all-MiniLM-L6-v2")
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -203,36 +204,17 @@ def search_index(index, question_vector, k=3):
  
 def retrieve_chunks(all_chunks, indices, metadata=None):
     """
-    Retrieve the actual text chunks corresponding to FAISS search indices.
- 
-    Priority: if any chunk contains 'abstract', it is returned directly
-    (useful for "what is this paper about" type queries).
-    Otherwise, FAISS-ranked chunks are returned.
- 
-    Args:
-        all_chunks (list[str]): All text chunks across all indexed documents.
-        indices (np.ndarray): FAISS result indices, shape (1, k).
-        metadata (list[dict], optional): Per-chunk metadata (source labels).
- 
-    Returns:
-        tuple: (retrieved_chunks: list[str], sources: list[str])
+    Retrieve text chunks using FAISS search indices.
     """
-    # If query seems general, prefer the abstract for grounding
-    for i, chunk in enumerate(all_chunks):
-        if "abstract" in chunk.lower():
-            source = metadata[i]["source"] if metadata else "unknown"
-            logger.info("Abstract chunk found — using for grounding.")
-            return [chunk], [source]
- 
-    # Fall back to FAISS-ranked results
     results = []
     sources = []
+
     for i in indices[0]:
         if 0 <= i < len(all_chunks):
             results.append(all_chunks[i])
             src = metadata[i]["source"] if metadata else "unknown"
             sources.append(src)
- 
+
     logger.info("Retrieved %d chunks.", len(results))
     return results, sources
  
@@ -241,76 +223,75 @@ def retrieve_chunks(all_chunks, indices, metadata=None):
  
 def generate_answer(question, chunks):
     """
-    Generate a grounded answer using the LLM and retrieved context chunks.
- 
-    The prompt explicitly instructs the model to:
-    - Answer ONLY from the provided context.
-    - Say "Not found in paper" if the answer is absent.
-    - Keep the answer concise (2–4 sentences).
- 
-    Args:
-        question (str): The user's question.
-        chunks (list[str]): Retrieved context chunks.
- 
-    Returns:
-        str: Generated answer string.
+    Generate a grounded answer using Groq LLM and retrieved context chunks.
+    Answers only from provided context — will not hallucinate.
     """
     if not chunks:
         return "Not found in paper."
- 
-    # Clean special tokens that may bleed in from tokenizer artifacts
+
+    # Clean special tokens
     clean_chunks = []
     for c in chunks:
         c = c.replace("<pad>", "").replace("<EOS>", "")
         c = " ".join(c.split())
         clean_chunks.append(c)
- 
-    # Use only the top chunk to stay within token limits
-    context = clean_chunks[0]
- 
-    # Grounded prompt — forces model to stay within provided context
-    prompt = f"""Context: {context}
 
-Question: {question}
+    context = " ".join(clean_chunks[:3])
 
-Answer using only the context above. If the answer is not in the context, say "Not found in paper." Keep answer to 2-3 sentences."""
- 
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
- 
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=150,    # Keep answers short
-        min_length=20,
-        do_sample=False,       # Deterministic output — reduces hallucination
-        no_repeat_ngram_size=3
+    response = groq_client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a research assistant. Answer questions using ONLY the provided context. Keep answers to 2-3 sentences. "
+            },
+            {
+                "role": "user",
+                "content": f"Context: {context}\n\nQuestion: {question}"
+            }
+        ]
     )
- 
-    answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    answer = response.choices[0].message.content
     logger.info("Answer generated (%d chars).", len(answer))
     return answer
- 
  
 # ── Standalone test ────────────────────────────────────────────────────────────
  
 if __name__ == "__main__":
     from ingestion import extract_text_from_pdf, clean_text
- 
-    # --- Single document test ---
-    text = extract_text_from_pdf("data/papers/sample.pdf")
-    text = clean_text(text)
- 
-    chunks = chunk_text(text)
-    vectors = embed_chunks(chunks)
-    index, metadata = store_embeddings(vectors, source_label="sample.pdf")
- 
-    question = "What is the main contribution of this paper?"
+
+    all_chunks = []
+    faiss_index = None
+    all_metadata = []
+
+    # ← Add or remove papers from this list as needed
+    papers = [
+        "data/papers/sample.pdf",
+        "data/papers/bert.pdf",
+        "data/papers/resnet.pdf"
+    ]
+
+    for paper in papers:
+        text = extract_text_from_pdf(paper)
+        text = clean_text(text)
+        chunks = chunk_text(text)
+        vectors = embed_chunks(chunks)
+        faiss_index, all_metadata = store_embeddings(
+            vectors,
+            source_label=paper.split("/")[-1],
+            existing_index=faiss_index,
+            existing_metadata=all_metadata
+        )
+        all_chunks.extend(chunks)
+
+    question = "What attention mechanism does the paper propose?"
     question_vector = embed_query(question)
-    indices = search_index(index, question_vector)
-    results, sources = retrieve_chunks(chunks, indices, metadata)
- 
+    indices = search_index(faiss_index, question_vector, k=5)
+    results, sources = retrieve_chunks(all_chunks, indices, all_metadata)
     answer = generate_answer(question, results)
- 
+
     print("\n── Generated Answer ──")
     print(answer)
     print("\nSource(s):", sources)
-    print(f"Chunks indexed: {index.ntotal}")
+    print(f"Chunks indexed: {faiss_index.ntotal}")
