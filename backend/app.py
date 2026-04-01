@@ -133,7 +133,7 @@ def query(data: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
  
     question_vector = embed_query(question)
-    indices = search_index(faiss_index, question_vector)
+    indices = search_index(faiss_index, question_vector,k=6)
     chunks, sources = retrieve_chunks(all_chunks, indices, all_metadata)
     answer = generate_answer(question, chunks)
  

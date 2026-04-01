@@ -243,7 +243,7 @@ def generate_answer(question, chunks):
         messages=[
             {
                 "role": "system",
-                "content": "You are a research assistant. Answer questions using ONLY the provided context. Keep answers to 2-3 sentences. "
+                "content": "You are a research assistant. Answer questions using ONLY the provided context. Keep answers concise for simple questions, but provide detailed explanations when the question warrants it."
             },
             {
                 "role": "user",
@@ -287,7 +287,7 @@ if __name__ == "__main__":
 
     question = "What attention mechanism does the paper propose?"
     question_vector = embed_query(question)
-    indices = search_index(faiss_index, question_vector, k=5)
+    indices = search_index(faiss_index, question_vector, k=6)
     results, sources = retrieve_chunks(all_chunks, indices, all_metadata)
     answer = generate_answer(question, results)
 
