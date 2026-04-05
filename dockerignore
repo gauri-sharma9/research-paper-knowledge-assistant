@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.git/
+.gitignore
+node_modules/
+ui/node_modules/
+ui/dist/
+*.log
+data/papers/*.pdf
